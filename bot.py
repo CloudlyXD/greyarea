@@ -42,6 +42,18 @@ def get_session(user_id):
         user_sessions[user_id] = UserSession()
     return user_sessions[user_id]
 
+async def send_long_message(update, text):
+    """Split and send long messages to handle Telegram's 4096 character limit"""
+    MAX_LENGTH = 4096
+    
+    if len(text) <= MAX_LENGTH:
+        await update.message.reply_text(text)
+    else:
+        # Split into chunks
+        for i in range(0, len(text), MAX_LENGTH):
+            chunk = text[i:i+MAX_LENGTH]
+            await update.message.reply_text(chunk)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = """
 🤖 *Welcome to AI Chat Bot!*
@@ -262,8 +274,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add AI response to history
         session.add_message("model", ai_response)
         
-        # Send response
-        await update.message.reply_text(ai_response)
+        # Send response (handles long messages automatically)
+        await send_long_message(update, ai_response)
         
     except Exception as e:
         logger.error(f"Error: {e}")
