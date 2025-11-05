@@ -26,7 +26,7 @@ class UserSession:
         self.system_prompt = "You are a helpful AI assistant."
         self.temperature = 0.7
         self.model_name = "gemini-2.5-flash"
-        self.max_history = 20  # Keep last 20 messages for context
+        self.max_history = 1000  # Keep last 20 messages for context
     
     def add_message(self, role, content):
         self.history.append({"role": role, "parts": [content]})
@@ -292,4 +292,5 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
+
     main()
