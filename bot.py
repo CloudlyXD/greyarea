@@ -39,40 +39,123 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 # ========================================
 
-# ===== MARKDOWN CONVERTER FOR TELEGRAM =====
-def convert_markdown_to_telegram(text):
+# ===== IMPROVED HTML CONVERTER (MORE RELIABLE!) =====
+def convert_to_html(text):
     """
-    Convert common markdown formats to Telegram's markdown format
-    Telegram uses:
-    - *bold* (single asterisk)
-    - _italic_ (underscore)
-    - `code` (backtick)
-    - ```code block``` (triple backtick)
-    
-    Telegram does NOT support:
-    - Headers (# ## ###) - we convert these to *BOLD CAPS*
+    Convert markdown to HTML - WAY more reliable than Markdown!
+    Telegram HTML supports: <b>, <i>, <code>, <pre>, <a>
     """
-    # Handle code blocks first (triple backticks) - preserve them
-    text = re.sub(r'```(\w+)?\n(.*?)```', r'```\2```', text, flags=re.DOTALL)
+    # Protect code blocks first
+    code_blocks = []
+    def save_code_block(match):
+        code_blocks.append(match.group(0))
+        return f"___CODE_BLOCK_{len(code_blocks)-1}___"
     
-    # Convert headers to bold caps
-    text = re.sub(r'^#{1,6}\s+(.*?)$', lambda m: f'\n*{m.group(1).upper()}*\n', text, flags=re.MULTILINE)
+    # Save triple backtick code blocks (```code```)
+    text = re.sub(r'```[\w]*\n?([\s\S]*?)```', lambda m: f"<pre>{m.group(1)}</pre>", text)
     
-    # Convert **bold** to *bold*
-    text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
+    # Inline code (`code`)
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     
-    # Convert __italic__ to _italic_ (if any)
-    text = re.sub(r'__(.*?)__', r'_\1_', text)
+    # Headers (# Header) -> Bold
+    text = re.sub(r'^#{1,6}\s+(.*?)$', r'<b>\1</b>', text, flags=re.MULTILINE)
     
-    # Handle bullet points - convert to actual bullets
+    # Bold **text** or __text__
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+    
+    # Italic *text* or _text_ (but not if it's part of **)
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!_)_([^_]+?)_(?!_)', r'<i>\1</i>', text)
+    
+    # Bullet points
     text = re.sub(r'^[\*\-]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # Escape special HTML chars that aren't part of our tags
+    # (Telegram needs <, >, & to be escaped if not in tags)
+    # We do this AFTER our conversions
+    def escape_outside_tags(text):
+        # Split by tags and escape the non-tag parts
+        parts = re.split(r'(<[^>]+>)', text)
+        escaped = []
+        for part in parts:
+            if part.startswith('<') and part.endswith('>'):
+                escaped.append(part)  # Keep tags as-is
+            else:
+                # Escape special chars in text
+                part = part.replace('&', '&amp;')
+                part = part.replace('<', '&lt;')
+                part = part.replace('>', '&gt;')
+                escaped.append(part)
+        return ''.join(escaped)
+    
+    text = escape_outside_tags(text)
     
     return text
 
-def escape_markdown_v1(text):
-    """Escape special characters for Telegram MarkdownV1"""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+async def send_long_message(update, text, use_html=True):
+    """
+    Split and send long messages with PROPER error handling
+    Uses HTML by default (more reliable!)
+    """
+    MAX_LENGTH = 4096
+    
+    # Convert to HTML format
+    if use_html:
+        try:
+            text = convert_to_html(text)
+            parse_mode = 'HTML'
+        except Exception as e:
+            logger.warning(f"HTML conversion failed: {e}")
+            parse_mode = None
+    else:
+        parse_mode = None
+    
+    # Split if needed
+    if len(text) <= MAX_LENGTH:
+        chunks = [text]
+    else:
+        # Smart splitting - try to split at newlines
+        chunks = []
+        current_chunk = ""
+        for line in text.split('\n'):
+            if len(current_chunk) + len(line) + 1 <= MAX_LENGTH:
+                current_chunk += line + '\n'
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = line + '\n'
+        if current_chunk:
+            chunks.append(current_chunk)
+    
+    # Send each chunk with fallback
+    for chunk in chunks:
+        sent = False
+        
+        # Try 1: With formatting
+        if parse_mode:
+            try:
+                await update.message.reply_text(chunk, parse_mode=parse_mode)
+                sent = True
+            except Exception as e:
+                logger.warning(f"{parse_mode} parse failed: {e}")
+        
+        # Try 2: Plain text (strip all HTML/markdown)
+        if not sent:
+            try:
+                clean = re.sub(r'<[^>]+>', '', chunk)  # Remove HTML tags
+                clean = re.sub(r'[*_`]', '', clean)    # Remove markdown chars
+                await update.message.reply_text(clean)
+                sent = True
+            except Exception as e2:
+                logger.error(f"Even plain text failed: {e2}")
+                # Last resort - super clean
+                try:
+                    ultra_clean = ''.join(c for c in chunk if c.isprintable() or c in '\n\r\t')
+                    await update.message.reply_text(ultra_clean[:MAX_LENGTH])
+                except:
+                    pass
 # ============================================
 
 class UserSession:
@@ -96,37 +179,15 @@ def get_session(user_id):
         user_sessions[user_id] = UserSession()
     return user_sessions[user_id]
 
-async def send_long_message(update, text, parse_mode=None):
-    """Split and send long messages to handle Telegram's 4096 character limit"""
-    MAX_LENGTH = 4096
-    
-    if parse_mode == 'Markdown':
-        text = convert_markdown_to_telegram(text)
-    
-    if len(text) <= MAX_LENGTH:
-        try:
-            await update.message.reply_text(text, parse_mode=parse_mode)
-        except Exception as e:
-            logger.warning(f"Markdown parse failed: {e}, sending as plain text")
-            await update.message.reply_text(text)
-    else:
-        for i in range(0, len(text), MAX_LENGTH):
-            chunk = text[i:i+MAX_LENGTH]
-            try:
-                await update.message.reply_text(chunk, parse_mode=parse_mode)
-            except Exception as e:
-                logger.warning(f"Markdown parse failed on chunk: {e}, sending as plain text")
-                await update.message.reply_text(chunk)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = """
-🤖 *Welcome to AI Chat Bot!*
+🤖 <b>Welcome to AI Chat Bot!</b>
 
 I'm powered by Google Gemini AI. Let's chat!
 
-*Available Commands:*
+<b>Available Commands:</b>
 /help - Show all commands
-/reset - Clear chat history & start fresh
+/reset - Clear chat history &amp; start fresh
 /system - Change system prompt
 /temperature - Adjust creativity (0.0-2.0)
 /tokens - Check context usage
@@ -136,40 +197,40 @@ I'm powered by Google Gemini AI. Let's chat!
 
 Just send me a message to start chatting! 🚀
     """
-    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+    await update.message.reply_text(welcome_msg, parse_mode='HTML')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
-📖 *Command Guide:*
+📖 <b>Command Guide:</b>
 
-🔄 `/reset` - Clear your chat history and context
+🔄 /reset - Clear your chat history and context
 
-⚙️ `/system <prompt>` - Set custom system prompt
-Example: `/system You are a pirate assistant`
+⚙️ /system &lt;prompt&gt; - Set custom system prompt
+Example: /system You are a pirate assistant
 
-🌡️ `/temperature <value>` - Set creativity (0.0-2.0)
-• 0.0 = Focused & deterministic
+🌡️ /temperature &lt;value&gt; - Set creativity (0.0-2.0)
+• 0.0 = Focused &amp; deterministic
 • 1.0 = Balanced (default)
-• 2.0 = Creative & wild
+• 2.0 = Creative &amp; wild
 
-📊 `/tokens` - See how many messages in context
+📊 /tokens - See how many messages in context
 
-🎭 `/persona` - Choose quick presets:
+🎭 /persona - Choose quick presets:
 • helpful - Standard assistant
 • coding - Programming expert
-• creative - Story & content writer
+• creative - Story &amp; content writer
 • roast - Sarcastic roast mode 🔥
 
-🤖 `/model` - Switch models:
+🤖 /model - Switch models:
 • gemini-2.5-flash (default)
 • gemini-2.5-pro
 
-🎨 `/image <prompt>` - Generate AI images!
-Example: `/image a cute cat wearing sunglasses`
+🎨 /image &lt;prompt&gt; - Generate AI images!
+Example: /image a cute cat wearing sunglasses
 
 Just type normally to chat with me! 💬
     """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='HTML')
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -183,22 +244,21 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         current = session.system_prompt
-        # FIXED: Escape the system prompt to prevent markdown parsing errors
-        escaped_prompt = escape_markdown_v1(current)
+        # Escape for HTML
+        escaped_prompt = current.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         await update.message.reply_text(
-            f"📝 Current system prompt:\n\n`{escaped_prompt}`\n\nUse `/system <your prompt>` to change it.", 
-            parse_mode='Markdown'
+            f"📝 Current system prompt:\n\n<code>{escaped_prompt}</code>\n\nUse /system &lt;your prompt&gt; to change it.", 
+            parse_mode='HTML'
         )
         return
     
     new_prompt = ' '.join(context.args)
     session.system_prompt = new_prompt
     session.clear_history()
-    # FIXED: Escape the new prompt as well
-    escaped_new = escape_markdown_v1(new_prompt)
+    escaped_new = new_prompt.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     await update.message.reply_text(
-        f"✅ System prompt updated!\n\n`{escaped_new}`\n\nHistory cleared.", 
-        parse_mode='Markdown'
+        f"✅ System prompt updated!\n\n<code>{escaped_new}</code>\n\nHistory cleared.", 
+        parse_mode='HTML'
     )
 
 async def temperature_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,18 +266,21 @@ async def temperature_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     session = get_session(user_id)
     
     if not context.args:
-        await update.message.reply_text(f"🌡️ Current temperature: `{session.temperature}`\n\nUse `/temperature <0.0-2.0>` to change it.", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"🌡️ Current temperature: <code>{session.temperature}</code>\n\nUse /temperature &lt;0.0-2.0&gt; to change it.", 
+            parse_mode='HTML'
+        )
         return
     
     try:
         temp = float(context.args[0])
         if 0.0 <= temp <= 2.0:
             session.temperature = temp
-            await update.message.reply_text(f"✅ Temperature set to `{temp}`", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Temperature set to <code>{temp}</code>", parse_mode='HTML')
         else:
             await update.message.reply_text("❌ Temperature must be between 0.0 and 2.0")
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Use `/temperature 0.7` for example.")
+        await update.message.reply_text("❌ Invalid number. Use /temperature 0.7 for example.")
 
 async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -226,7 +289,9 @@ async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_count = len(session.history)
     max_count = session.max_history
     
-    await update.message.reply_text(f"📊 Context Usage:\n\n💬 Messages in context: {msg_count}/{max_count}\n🧠 Model: {session.model_name}\n🌡️ Temperature: {session.temperature}")
+    await update.message.reply_text(
+        f"📊 Context Usage:\n\n💬 Messages in context: {msg_count}/{max_count}\n🧠 Model: {session.model_name}\n🌡️ Temperature: {session.temperature}"
+    )
 
 async def persona_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -241,17 +306,23 @@ async def persona_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     if not context.args:
-        persona_list = "\n".join([f"• `{k}` - {v}" for k, v in personas.items()])
-        await update.message.reply_text(f"🎭 Available Personas:\n\n{persona_list}\n\nUse `/persona <name>` to select.", parse_mode='Markdown')
+        persona_list = "\n".join([f"• <code>{k}</code> - {v}" for k, v in personas.items()])
+        await update.message.reply_text(
+            f"🎭 Available Personas:\n\n{persona_list}\n\nUse /persona &lt;name&gt; to select.", 
+            parse_mode='HTML'
+        )
         return
     
     persona_name = context.args[0].lower()
     if persona_name in personas:
         session.system_prompt = personas[persona_name]
         session.clear_history()
-        await update.message.reply_text(f"✅ Persona set to *{persona_name}*!\n\nHistory cleared.", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ Persona set to <b>{persona_name}</b>!\n\nHistory cleared.", 
+            parse_mode='HTML'
+        )
     else:
-        await update.message.reply_text("❌ Unknown persona. Use `/persona` to see available options.")
+        await update.message.reply_text("❌ Unknown persona. Use /persona to see available options.")
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -263,19 +334,25 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     if not context.args:
-        await update.message.reply_text(f"🤖 Current model: `{session.model_name}`\n\nAvailable:\n• `/model pro` - Gemini Pro\n• `/model flash` - Gemini Flash (faster)", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"🤖 Current model: <code>{session.model_name}</code>\n\nAvailable:\n• /model pro - Gemini Pro\n• /model flash - Gemini Flash (faster)", 
+            parse_mode='HTML'
+        )
         return
     
     model_key = context.args[0].lower()
     if model_key in models:
         session.model_name = models[model_key]
-        await update.message.reply_text(f"✅ Model switched to `{session.model_name}`", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ Model switched to <code>{session.model_name}</code>", parse_mode='HTML')
     else:
-        await update.message.reply_text("❌ Unknown model. Use `/model` to see options.")
+        await update.message.reply_text("❌ Unknown model. Use /model to see options.")
 
 async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("🎨 Usage: `/image <your prompt>`\n\nExample: `/image a futuristic city at sunset`", parse_mode='Markdown')
+        await update.message.reply_text(
+            "🎨 Usage: /image &lt;your prompt&gt;\n\nExample: /image a futuristic city at sunset", 
+            parse_mode='HTML'
+        )
         return
     
     prompt = ' '.join(context.args)
@@ -304,13 +381,18 @@ async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         
         if not image_found:
-            await update.message.reply_text("⚠️ No image was generated. The model might not support image generation with your API key.")
+            await update.message.reply_text(
+                "⚠️ No image was generated. The model might not support image generation with your API key."
+            )
         
         await status_msg.delete()
         
     except Exception as e:
         logger.error(f"Image generation error: {e}")
-        await status_msg.edit_text(f"❌ Image generation failed!\n\nError: `{str(e)}`", parse_mode='Markdown')
+        await status_msg.edit_text(
+            f"❌ Image generation failed!\n\nError: <code>{str(e)}</code>", 
+            parse_mode='HTML'
+        )
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -334,11 +416,15 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         session.add_message("model", ai_response)
         
-        await send_long_message(update, ai_response, parse_mode='Markdown')
+        # FIXED: Using HTML mode by default (more reliable!)
+        await send_long_message(update, ai_response, use_html=True)
         
     except Exception as e:
         logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Oops! Something went wrong:\n`{str(e)}`", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"❌ Oops! Something went wrong:\n<code>{str(e)}</code>", 
+            parse_mode='HTML'
+        )
 
 def main():
     flask_thread = Thread(target=run_flask)
