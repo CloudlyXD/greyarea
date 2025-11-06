@@ -4,7 +4,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import google.generativeai as genai
 from io import BytesIO
 import os
-
+from flask import Flask
+from threading import Thread
 
 # Configuration
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -19,6 +20,23 @@ logger = logging.getLogger(__name__)
 
 # Store user sessions (chat history + settings)
 user_sessions = {}
+
+# ===== FLASK WEB SERVER (THE HACK!) =====
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot is running! This is just a dummy server to keep Render happy."
+
+@app.route('/health')
+def health():
+    return {"status": "alive", "bot": "running"}
+
+def run_flask():
+    """Run Flask server on the port Render expects"""
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+# ========================================
 
 class UserSession:
     def __init__(self):
@@ -282,6 +300,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Oops! Something went wrong:\n`{str(e)}`", parse_mode='Markdown')
 
 def main():
+    # Start Flask server in a separate thread
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info("🌐 Flask server started!")
+    
     # Create application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -304,5 +328,4 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-
     main()
