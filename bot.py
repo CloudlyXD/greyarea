@@ -6,6 +6,7 @@ from io import BytesIO
 import os
 from flask import Flask
 from threading import Thread
+import re
 
 # Configuration
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -38,6 +39,40 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 # ========================================
 
+# ===== MARKDOWN CONVERTER FOR TELEGRAM =====
+def convert_markdown_to_telegram(text):
+    """
+    Convert common markdown formats to Telegram's markdown format
+    Telegram uses:
+    - *bold* (single asterisk)
+    - _italic_ (underscore)
+    - `code` (backtick)
+    - ```code block``` (triple backtick)
+    """
+    # Handle code blocks first (triple backticks)
+    text = re.sub(r'```(\w+)?\n(.*?)```', r'```\2```', text, flags=re.DOTALL)
+    
+    # Convert **bold** to *bold*
+    text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
+    
+    # Convert __italic__ to _italic_ (if any)
+    text = re.sub(r'__(.*?)__', r'_\1_', text)
+    
+    # Handle bullet points - convert to actual bullets
+    # Convert * item or - item to • item
+    text = re.sub(r'^[\*\-]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # Handle numbered lists - keep them as is, they work fine
+    
+    return text
+
+def escape_markdown_v1(text):
+    """Escape special characters for Telegram MarkdownV1"""
+    # Characters that need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+# ============================================
+
 class UserSession:
     def __init__(self):
         self.history = []
@@ -60,17 +95,30 @@ def get_session(user_id):
         user_sessions[user_id] = UserSession()
     return user_sessions[user_id]
 
-async def send_long_message(update, text):
+async def send_long_message(update, text, parse_mode=None):
     """Split and send long messages to handle Telegram's 4096 character limit"""
     MAX_LENGTH = 4096
     
+    # Convert markdown if needed
+    if parse_mode == 'Markdown':
+        text = convert_markdown_to_telegram(text)
+    
     if len(text) <= MAX_LENGTH:
-        await update.message.reply_text(text)
+        try:
+            await update.message.reply_text(text, parse_mode=parse_mode)
+        except Exception as e:
+            # If markdown parsing fails, send as plain text
+            logger.warning(f"Markdown parse failed: {e}, sending as plain text")
+            await update.message.reply_text(text)
     else:
         # Split into chunks
         for i in range(0, len(text), MAX_LENGTH):
             chunk = text[i:i+MAX_LENGTH]
-            await update.message.reply_text(chunk)
+            try:
+                await update.message.reply_text(chunk, parse_mode=parse_mode)
+            except Exception as e:
+                logger.warning(f"Markdown parse failed on chunk: {e}, sending as plain text")
+                await update.message.reply_text(chunk)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = """
@@ -292,8 +340,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add AI response to history
         session.add_message("model", ai_response)
         
-        # Send response (handles long messages automatically)
-        await send_long_message(update, ai_response)
+        # Send response with markdown support!
+        await send_long_message(update, ai_response, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error: {e}")
