@@ -183,31 +183,31 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         current = session.system_prompt
-        await update.message.reply_text(f"📝 Current system prompt:\n\n`{current}`\n\nUse `/system <your prompt>` to change it.", parse_mode='Markdown')
+        await update.message.reply_text(f"📝 Current system prompt:\n\n{current}\n\nUse /system <your prompt> to change it.")
         return
     
     new_prompt = ' '.join(context.args)
     session.system_prompt = new_prompt
     session.clear_history()
-    await update.message.reply_text(f"✅ System prompt updated!\n\n`{new_prompt}`\n\nHistory cleared.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ System prompt updated!\n\n{new_prompt}\n\nHistory cleared.")
 
 async def temperature_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
     
     if not context.args:
-        await update.message.reply_text(f"🌡️ Current temperature: `{session.temperature}`\n\nUse `/temperature <0.0-2.0>` to change it.", parse_mode='Markdown')
+        await update.message.reply_text(f"🌡️ Current temperature: {session.temperature}\n\nUse /temperature <0.0-2.0> to change it.")
         return
     
     try:
         temp = float(context.args[0])
         if 0.0 <= temp <= 2.0:
             session.temperature = temp
-            await update.message.reply_text(f"✅ Temperature set to `{temp}`", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Temperature set to {temp}")
         else:
             await update.message.reply_text("❌ Temperature must be between 0.0 and 2.0")
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Use `/temperature 0.7` for example.")
+        await update.message.reply_text("❌ Invalid number. Use /temperature 0.7 for example.")
 
 async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -253,15 +253,15 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     if not context.args:
-        await update.message.reply_text(f"🤖 Current model: `{session.model_name}`\n\nAvailable:\n• `/model pro` - Gemini Pro\n• `/model flash` - Gemini Flash (faster)", parse_mode='Markdown')
+        await update.message.reply_text(f"🤖 Current model: {session.model_name}\n\nAvailable:\n• /model pro - Gemini Pro\n• /model flash - Gemini Flash (faster)")
         return
     
     model_key = context.args[0].lower()
     if model_key in models:
         session.model_name = models[model_key]
-        await update.message.reply_text(f"✅ Model switched to `{session.model_name}`", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ Model switched to {session.model_name}")
     else:
-        await update.message.reply_text("❌ Unknown model. Use `/model` to see options.")
+        await update.message.reply_text("❌ Unknown model. Use /model to see options.")
 
 async def image_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
